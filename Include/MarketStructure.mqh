@@ -2,6 +2,9 @@
 //|                                           MarketStructure.mqh    |
 //|                        Market Structure Detection (BOS & ChoCH)  |
 //+------------------------------------------------------------------+
+#ifndef MARKET_STRUCTURE_MQH
+#define MARKET_STRUCTURE_MQH
+
 #property copyright "SMC EA"
 #property version   "1.00"
 
@@ -462,4 +465,6 @@ string CMarketStructure::EventToString(ENUM_STRUCTURE_EVENT type) const
    }
    return "Unknown";
 }
+
+#endif // MARKET_STRUCTURE_MQH
 //+------------------------------------------------------------------+
