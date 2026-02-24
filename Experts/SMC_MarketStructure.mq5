@@ -3,8 +3,8 @@
 //|                      Smart Money Concepts - Market Structure EA   |
 //+------------------------------------------------------------------+
 #property copyright "SMC EA"
-#property version   "1.00"
-#property description "Market structure (BOS/ChoCH) and Triangle pattern detection with breakout alerts"
+#property version   "2.00"
+#property description "Market structure (BOS/ChoCH) and Triangle pattern detection with breakout validation"
 #property strict
 
 #include "../Include/MarketStructure.mqh"
@@ -20,8 +20,7 @@ input bool   InpAlertOnChange  = true;         // Alert on structure change
 input group  "=== Triangle Patterns ==="
 input int    InpTriMinSwings     = 3;          // Min swing points per side for triangle
 input double InpTriFlatThreshold = 0.002;      // Flat slope threshold (% of price/bar)
-input double InpTriMinR2         = 0.60;       // Min R-squared for trendline fit
-input double InpTriBreakoutPct   = 0.1;        // Breakout margin (% beyond trendline)
+input double InpTriBreakoutPct   = 0.15;       // Breakout margin (% beyond trendline)
 input bool   InpTriDrawLines     = true;       // Draw triangle trendlines on chart
 input bool   InpAlertOnBreakout  = true;       // Alert on triangle breakout
 
@@ -43,7 +42,6 @@ CTrianglePattern trianglePattern;
 ENUM_MARKET_STRUCTURE lastStructure = MS_UNDEFINED;
 ENUM_PRICE_POSITION   lastTriPosition = PP_NO_TRIANGLE;
 datetime lastBarTime = 0;
-string   dashboardName = "MS_Dashboard";
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -67,7 +65,7 @@ int OnInit()
 
    // Initialize triangle pattern detector
    trianglePattern.Init(_Symbol, _Period, InpTriMinSwings, InpTriFlatThreshold,
-                        InpTriMinR2, InpTriBreakoutPct);
+                        InpTriBreakoutPct);
 
    // Run initial analysis
    marketStructure.Update();
@@ -82,7 +80,7 @@ int OnInit()
    if(InpShowDashboard)
       DrawDashboard();
 
-   Print("SMC Market Structure EA initialized");
+   Print("SMC Market Structure EA v2.0 initialized");
    Print("Symbol: ", _Symbol, " | Timeframe: ", EnumToString(_Period));
    Print("Lookback: ", InpLookback, " | Swing Strength: ", InpSwingStrength);
    PrintStructureSummary();
@@ -96,7 +94,6 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   // Clean up chart objects
    ObjectsDeleteAll(0, "MS_");
    ObjectsDeleteAll(0, "TRI_");
    Comment("");
@@ -121,7 +118,6 @@ void OnTick()
 
    // Check for structure change
    ENUM_MARKET_STRUCTURE currentStructure = marketStructure.GetStructure();
-
    if(currentStructure != lastStructure)
    {
       OnStructureChange(lastStructure, currentStructure);
@@ -157,15 +153,44 @@ void OnStructureChange(ENUM_MARKET_STRUCTURE oldStructure, ENUM_MARKET_STRUCTURE
       eventDesc = marketStructure.EventToString(lastEvent.type);
 
    string message = StringFormat("%s %s: Structure changed from %s to %s via %s",
-                                 _Symbol,
-                                 EnumToString(_Period),
+                                 _Symbol, EnumToString(_Period),
                                  StructureToString(oldStructure),
                                  StructureToString(newStructure),
                                  eventDesc);
-
    Print(message);
 
    if(InpAlertOnChange)
+      Alert(message);
+}
+
+//+------------------------------------------------------------------+
+//| Handle triangle position change events                           |
+//+------------------------------------------------------------------+
+void OnTriangleEvent(ENUM_PRICE_POSITION oldPos, ENUM_PRICE_POSITION newPos)
+{
+   TriangleResult result = trianglePattern.GetResult();
+
+   string message = StringFormat("%s %s: Triangle #%d %s | %s -> %s",
+                                 _Symbol, EnumToString(_Period),
+                                 result.candidateIndex,
+                                 trianglePattern.PatternToString(result.pattern),
+                                 trianglePattern.PositionToString(oldPos),
+                                 trianglePattern.PositionToString(newPos));
+
+   if(newPos == PP_BREAKOUT_ABOVE || newPos == PP_BREAKOUT_BELOW)
+   {
+      message += StringFormat(" (%.2f%%) | %s",
+                              result.breakoutPercent,
+                              trianglePattern.ValidationToString(result.validation));
+   }
+   else if(newPos == PP_INSIDE)
+   {
+      message += " | Strength: " + trianglePattern.StrengthToString(result.strength);
+   }
+
+   Print(message);
+
+   if(InpAlertOnBreakout && (newPos == PP_BREAKOUT_ABOVE || newPos == PP_BREAKOUT_BELOW))
       Alert(message);
 }
 
@@ -178,14 +203,13 @@ void DrawSwingPoints()
 
    SwingPoint point;
 
-   // Draw swing highs
    for(int i = 0; i < marketStructure.GetSwingHighCount(); i++)
    {
       if(marketStructure.GetSwingHigh(i, point))
       {
          string name = "MS_SH_" + IntegerToString(i);
          ObjectCreate(0, name, OBJ_ARROW, 0, point.time, point.price);
-         ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159); // Down triangle
+         ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);
          ObjectSetInteger(0, name, OBJPROP_COLOR, InpSwingHighColor);
          ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
          ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_BOTTOM);
@@ -194,14 +218,13 @@ void DrawSwingPoints()
       }
    }
 
-   // Draw swing lows
    for(int i = 0; i < marketStructure.GetSwingLowCount(); i++)
    {
       if(marketStructure.GetSwingLow(i, point))
       {
          string name = "MS_SL_" + IntegerToString(i);
          ObjectCreate(0, name, OBJ_ARROW, 0, point.time, point.price);
-         ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159); // Up triangle
+         ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);
          ObjectSetInteger(0, name, OBJPROP_COLOR, InpSwingLowColor);
          ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
          ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_TOP);
@@ -231,31 +254,13 @@ void DrawStructureLevels()
 
          switch(event.type)
          {
-            case SE_BOS_BULL:
-               lineColor = InpBullishColor;
-               lineStyle = STYLE_SOLID;
-               label = "BOS";
-               break;
-            case SE_BOS_BEAR:
-               lineColor = InpBearishColor;
-               lineStyle = STYLE_SOLID;
-               label = "BOS";
-               break;
-            case SE_CHOCH_BULL:
-               lineColor = InpBullishColor;
-               lineStyle = STYLE_DASH;
-               label = "ChoCH";
-               break;
-            case SE_CHOCH_BEAR:
-               lineColor = InpBearishColor;
-               lineStyle = STYLE_DASH;
-               label = "ChoCH";
-               break;
-            default:
-               continue;
+            case SE_BOS_BULL:   lineColor = InpBullishColor; lineStyle = STYLE_SOLID; label = "BOS";   break;
+            case SE_BOS_BEAR:   lineColor = InpBearishColor; lineStyle = STYLE_SOLID; label = "BOS";   break;
+            case SE_CHOCH_BULL: lineColor = InpBullishColor; lineStyle = STYLE_DASH;  label = "ChoCH"; break;
+            case SE_CHOCH_BEAR: lineColor = InpBearishColor; lineStyle = STYLE_DASH;  label = "ChoCH"; break;
+            default: continue;
          }
 
-         // Draw horizontal line at the broken level
          ObjectCreate(0, name, OBJ_TREND, 0,
                      event.time, event.level,
                      event.time + PeriodSeconds(_Period) * 10, event.level);
@@ -266,7 +271,6 @@ void DrawStructureLevels()
          ObjectSetString(0, name, OBJPROP_TOOLTIP,
                         StringFormat("%s at %.5f", label, event.level));
 
-         // Draw label text
          string labelName = "MS_TXT_" + IntegerToString(i);
          ObjectCreate(0, labelName, OBJ_TEXT, 0, event.time, event.level);
          ObjectSetString(0, labelName, OBJPROP_TEXT, label);
@@ -278,34 +282,8 @@ void DrawStructureLevels()
 }
 
 //+------------------------------------------------------------------+
-//| Handle triangle breakout/entry events                            |
-//+------------------------------------------------------------------+
-void OnTriangleEvent(ENUM_PRICE_POSITION oldPos, ENUM_PRICE_POSITION newPos)
-{
-   TriangleResult result = trianglePattern.GetResult();
-
-   string message = StringFormat("%s %s: Triangle %s | %s -> %s",
-                                 _Symbol,
-                                 EnumToString(_Period),
-                                 trianglePattern.PatternToString(result.pattern),
-                                 trianglePattern.PositionToString(oldPos),
-                                 trianglePattern.PositionToString(newPos));
-
-   if(newPos == PP_BREAKOUT_ABOVE)
-      message += StringFormat(" | BULLISH BREAKOUT (%.2f%% above)", result.breakoutPercent);
-   else if(newPos == PP_BREAKOUT_BELOW)
-      message += StringFormat(" | BEARISH BREAKOUT (%.2f%% below)", result.breakoutPercent);
-   else if(newPos == PP_INSIDE)
-      message += " | Strength: " + trianglePattern.StrengthToString(result.strength);
-
-   Print(message);
-
-   if(InpAlertOnBreakout && (newPos == PP_BREAKOUT_ABOVE || newPos == PP_BREAKOUT_BELOW))
-      Alert(message);
-}
-
-//+------------------------------------------------------------------+
-//| Draw triangle trendlines on chart                                |
+//| Draw the selected triangle's trendlines on chart                 |
+//| Uses regression-projected start/end points for accurate lines    |
 //+------------------------------------------------------------------+
 void DrawTriangleTrendlines()
 {
@@ -314,78 +292,84 @@ void DrawTriangleTrendlines()
    TriangleResult result = trianglePattern.GetResult();
    if(result.pattern == TP_NONE) return;
 
-   // We draw trendlines from the oldest swing point to projected future
-   // Upper trendline
-   SwingPoint firstHigh, lastHigh;
-   if(marketStructure.GetSwingHighCount() >= 2)
-   {
-      marketStructure.GetSwingHigh(0, firstHigh);
-      marketStructure.GetSwingHigh(marketStructure.GetSwingHighCount() - 1, lastHigh);
+   datetime currentTime = iTime(_Symbol, _Period, 0);
 
-      // Project: use the regression line endpoint at current bar
-      datetime futureTime = iTime(_Symbol, _Period, 0) + PeriodSeconds(_Period) * 5;
-
-      string upperName = "TRI_Upper";
-      ObjectCreate(0, upperName, OBJ_TREND, 0,
-                  firstHigh.time, firstHigh.price,
-                  iTime(_Symbol, _Period, 0), result.upperLevel);
-      ObjectSetInteger(0, upperName, OBJPROP_COLOR, InpTriUpperColor);
-      ObjectSetInteger(0, upperName, OBJPROP_STYLE, STYLE_DASHDOT);
-      ObjectSetInteger(0, upperName, OBJPROP_WIDTH, 2);
-      ObjectSetInteger(0, upperName, OBJPROP_RAY_RIGHT, true);
-      ObjectSetString(0, upperName, OBJPROP_TOOLTIP,
-                     StringFormat("Upper Trendline: %.5f (slope: %.6f, R²: %.2f)",
-                                  result.upperLevel, result.highSlope, result.highR2));
-   }
+   // Upper trendline: from regression start to current bar projection
+   string upperName = "TRI_Upper";
+   ObjectCreate(0, upperName, OBJ_TREND, 0,
+               result.trendStartTime, result.upperAtStart,
+               currentTime, result.upperLevel);
+   ObjectSetInteger(0, upperName, OBJPROP_COLOR, InpTriUpperColor);
+   ObjectSetInteger(0, upperName, OBJPROP_STYLE, STYLE_DASHDOT);
+   ObjectSetInteger(0, upperName, OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, upperName, OBJPROP_RAY_RIGHT, true);
+   ObjectSetString(0, upperName, OBJPROP_TOOLTIP,
+                  StringFormat("Upper: %.5f (slope:%.6f R²:%.2f)",
+                               result.upperLevel, result.highSlope, result.highR2));
 
    // Lower trendline
-   SwingPoint firstLow, lastLow;
-   if(marketStructure.GetSwingLowCount() >= 2)
-   {
-      marketStructure.GetSwingLow(0, firstLow);
-      marketStructure.GetSwingLow(marketStructure.GetSwingLowCount() - 1, lastLow);
+   string lowerName = "TRI_Lower";
+   ObjectCreate(0, lowerName, OBJ_TREND, 0,
+               result.trendStartTime, result.lowerAtStart,
+               currentTime, result.lowerLevel);
+   ObjectSetInteger(0, lowerName, OBJPROP_COLOR, InpTriLowerColor);
+   ObjectSetInteger(0, lowerName, OBJPROP_STYLE, STYLE_DASHDOT);
+   ObjectSetInteger(0, lowerName, OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, lowerName, OBJPROP_RAY_RIGHT, true);
+   ObjectSetString(0, lowerName, OBJPROP_TOOLTIP,
+                  StringFormat("Lower: %.5f (slope:%.6f R²:%.2f)",
+                               result.lowerLevel, result.lowSlope, result.lowR2));
 
-      string lowerName = "TRI_Lower";
-      ObjectCreate(0, lowerName, OBJ_TREND, 0,
-                  firstLow.time, firstLow.price,
-                  iTime(_Symbol, _Period, 0), result.lowerLevel);
-      ObjectSetInteger(0, lowerName, OBJPROP_COLOR, InpTriLowerColor);
-      ObjectSetInteger(0, lowerName, OBJPROP_STYLE, STYLE_DASHDOT);
-      ObjectSetInteger(0, lowerName, OBJPROP_WIDTH, 2);
-      ObjectSetInteger(0, lowerName, OBJPROP_RAY_RIGHT, true);
-      ObjectSetString(0, lowerName, OBJPROP_TOOLTIP,
-                     StringFormat("Lower Trendline: %.5f (slope: %.6f, R²: %.2f)",
-                                  result.lowerLevel, result.lowSlope, result.lowR2));
-   }
-
-   // Pattern label near the apex area
+   // Pattern label at midpoint
    string patLabel = "TRI_PatternLabel";
-   datetime labelTime = iTime(_Symbol, _Period, 0);
-   double labelPrice = (result.upperLevel + result.lowerLevel) / 2.0;
-
-   ObjectCreate(0, patLabel, OBJ_TEXT, 0, labelTime, labelPrice);
+   double midPrice = (result.upperLevel + result.lowerLevel) / 2.0;
+   ObjectCreate(0, patLabel, OBJ_TEXT, 0, currentTime, midPrice);
    ObjectSetString(0, patLabel, OBJPROP_TEXT,
-                  trianglePattern.PatternToString(result.pattern));
+                  StringFormat("Tri#%d %s", result.candidateIndex,
+                               trianglePattern.PatternToString(result.pattern)));
    ObjectSetInteger(0, patLabel, OBJPROP_COLOR, clrYellow);
    ObjectSetInteger(0, patLabel, OBJPROP_FONTSIZE, 9);
    ObjectSetString(0, patLabel, OBJPROP_FONT, "Arial Bold");
 
-   // If breakout, draw an arrow indicating direction
+   // Breakout arrow with validation color
    if(result.pricePosition == PP_BREAKOUT_ABOVE)
    {
       string arrowName = "TRI_BreakoutArrow";
-      ObjectCreate(0, arrowName, OBJ_ARROW, 0, labelTime, result.upperLevel);
-      ObjectSetInteger(0, arrowName, OBJPROP_ARROWCODE, 241); // Up arrow
-      ObjectSetInteger(0, arrowName, OBJPROP_COLOR, clrLime);
+      ObjectCreate(0, arrowName, OBJ_ARROW, 0, currentTime, result.upperLevel);
+      ObjectSetInteger(0, arrowName, OBJPROP_ARROWCODE, 241);
+      ObjectSetInteger(0, arrowName, OBJPROP_COLOR,
+                      (result.validation == BV_VALIDATED) ? clrLime : clrOrange);
       ObjectSetInteger(0, arrowName, OBJPROP_WIDTH, 3);
+
+      // Validation label
+      string valLabel = "TRI_ValidationLabel";
+      ObjectCreate(0, valLabel, OBJ_TEXT, 0, currentTime, result.upperLevel);
+      ObjectSetString(0, valLabel, OBJPROP_TEXT,
+                     trianglePattern.ValidationToString(result.validation));
+      ObjectSetInteger(0, valLabel, OBJPROP_COLOR,
+                      (result.validation == BV_VALIDATED) ? clrLime : clrOrange);
+      ObjectSetInteger(0, valLabel, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, valLabel, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, valLabel, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
    }
    else if(result.pricePosition == PP_BREAKOUT_BELOW)
    {
       string arrowName = "TRI_BreakoutArrow";
-      ObjectCreate(0, arrowName, OBJ_ARROW, 0, labelTime, result.lowerLevel);
-      ObjectSetInteger(0, arrowName, OBJPROP_ARROWCODE, 242); // Down arrow
-      ObjectSetInteger(0, arrowName, OBJPROP_COLOR, clrRed);
+      ObjectCreate(0, arrowName, OBJ_ARROW, 0, currentTime, result.lowerLevel);
+      ObjectSetInteger(0, arrowName, OBJPROP_ARROWCODE, 242);
+      ObjectSetInteger(0, arrowName, OBJPROP_COLOR,
+                      (result.validation == BV_VALIDATED) ? clrRed : clrOrange);
       ObjectSetInteger(0, arrowName, OBJPROP_WIDTH, 3);
+
+      string valLabel = "TRI_ValidationLabel";
+      ObjectCreate(0, valLabel, OBJ_TEXT, 0, currentTime, result.lowerLevel);
+      ObjectSetString(0, valLabel, OBJPROP_TEXT,
+                     trianglePattern.ValidationToString(result.validation));
+      ObjectSetInteger(0, valLabel, OBJPROP_COLOR,
+                      (result.validation == BV_VALIDATED) ? clrRed : clrOrange);
+      ObjectSetInteger(0, valLabel, OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, valLabel, OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, valLabel, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
    }
 }
 
@@ -395,29 +379,23 @@ void DrawTriangleTrendlines()
 void DrawDashboard()
 {
    int x = 20, y = 30;
-   color textColor = clrWhite;
    color bgColor;
-   string structureStr = marketStructure.GetStructureString();
 
    ENUM_MARKET_STRUCTURE ms = marketStructure.GetStructure();
-   if(ms == MS_BULLISH)
-      bgColor = InpBullishColor;
-   else if(ms == MS_BEARISH)
-      bgColor = InpBearishColor;
-   else
-      bgColor = clrGray;
+   if(ms == MS_BULLISH)       bgColor = InpBullishColor;
+   else if(ms == MS_BEARISH)  bgColor = InpBearishColor;
+   else                        bgColor = clrGray;
 
-   // Calculate dashboard height based on triangle data
    TriangleResult triResult = trianglePattern.GetResult();
    bool hasTriangle = (triResult.pattern != TP_NONE);
-   int dashHeight = hasTriangle ? 230 : 120;
+   int dashHeight = hasTriangle ? 290 : 175;
 
-   // Background rectangle
+   // Background
    string bgName = "MS_Dashboard_BG";
    ObjectCreate(0, bgName, OBJ_RECTANGLE_LABEL, 0, 0, 0);
    ObjectSetInteger(0, bgName, OBJPROP_XDISTANCE, x - 5);
    ObjectSetInteger(0, bgName, OBJPROP_YDISTANCE, y - 5);
-   ObjectSetInteger(0, bgName, OBJPROP_XSIZE, 270);
+   ObjectSetInteger(0, bgName, OBJPROP_XSIZE, 290);
    ObjectSetInteger(0, bgName, OBJPROP_YSIZE, dashHeight);
    ObjectSetInteger(0, bgName, OBJPROP_BGCOLOR, C'30,30,30');
    ObjectSetInteger(0, bgName, OBJPROP_BORDER_COLOR, bgColor);
@@ -426,22 +404,21 @@ void DrawDashboard()
    ObjectSetInteger(0, bgName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
    ObjectSetInteger(0, bgName, OBJPROP_BACK, false);
 
-   // Title
+   // === Market Structure Section ===
    CreateLabel("MS_Dashboard_Title", "Market Structure", x, y, 10, clrWhite);
    y += 22;
 
-   // Structure state
-   CreateLabel("MS_Dashboard_State", "Structure: " + structureStr, x, y, 11, bgColor);
+   CreateLabel("MS_Dashboard_State", "Structure: " + marketStructure.GetStructureString(),
+               x, y, 11, bgColor);
    y += 20;
 
-   // Swing counts
-   string swingInfo = StringFormat("Swing Highs: %d | Lows: %d",
-                                   marketStructure.GetSwingHighCount(),
-                                   marketStructure.GetSwingLowCount());
-   CreateLabel("MS_Dashboard_Swings", swingInfo, x, y, 9, clrSilver);
+   CreateLabel("MS_Dashboard_Swings",
+               StringFormat("Swing Highs: %d | Lows: %d",
+                            marketStructure.GetSwingHighCount(),
+                            marketStructure.GetSwingLowCount()),
+               x, y, 9, clrSilver);
    y += 18;
 
-   // Last event
    StructureEvent lastEvent;
    string eventStr = "Last Event: None";
    if(marketStructure.GetLastEvent(lastEvent))
@@ -450,38 +427,45 @@ void DrawDashboard()
    CreateLabel("MS_Dashboard_Event", eventStr, x, y, 9, clrSilver);
    y += 18;
 
-   // Event count
    CreateLabel("MS_Dashboard_Count",
                StringFormat("Total Events: %d", marketStructure.GetEventCount()),
                x, y, 9, clrSilver);
    y += 22;
 
-   // --- Triangle Pattern Section ---
+   // === Triangle Pattern Section ===
    CreateLabel("MS_Dashboard_TriTitle", "--- Triangle Pattern ---", x, y, 10, clrWhite);
    y += 20;
 
-   string patternStr = trianglePattern.PatternToString(triResult.pattern);
-   color  patternColor = clrGray;
-   if(hasTriangle)
-      patternColor = clrYellow;
-
-   CreateLabel("MS_Dashboard_TriPattern", "Pattern: " + patternStr, x, y, 10, patternColor);
-   y += 18;
+   // Candidates overview line
+   string candSummary = trianglePattern.GetCandidatesSummary();
+   CreateLabel("MS_Dashboard_TriCands", candSummary, x, y, 8, clrDarkGray);
+   y += 16;
 
    if(hasTriangle)
    {
+      // Selected candidate and pattern
+      string selStr = StringFormat("Selected: #%d %s",
+                                   triResult.candidateIndex,
+                                   trianglePattern.PatternToString(triResult.pattern));
+      CreateLabel("MS_Dashboard_TriSel", selStr, x, y, 10, clrYellow);
+      y += 18;
+
+      // R-squared values
+      CreateLabel("MS_Dashboard_TriR2",
+                  StringFormat("R²: High=%.3f Low=%.3f", triResult.highR2, triResult.lowR2),
+                  x, y, 9, clrSilver);
+      y += 16;
+
       // Price position
       string posStr = trianglePattern.PositionToString(triResult.pricePosition);
       color posColor = clrSilver;
-      if(triResult.pricePosition == PP_BREAKOUT_ABOVE)
-         posColor = clrLime;
-      else if(triResult.pricePosition == PP_BREAKOUT_BELOW)
-         posColor = clrRed;
+      if(triResult.pricePosition == PP_BREAKOUT_ABOVE) posColor = clrLime;
+      else if(triResult.pricePosition == PP_BREAKOUT_BELOW) posColor = clrRed;
 
       CreateLabel("MS_Dashboard_TriPos", "Position: " + posStr, x, y, 9, posColor);
-      y += 18;
+      y += 16;
 
-      // Strength / breakout info
+      // Strength or breakout info
       if(triResult.pricePosition == PP_INSIDE)
       {
          string strStr = "Strength: " + trianglePattern.StrengthToString(triResult.strength);
@@ -492,27 +476,45 @@ void DrawDashboard()
             strColor = InpBearishColor;
 
          CreateLabel("MS_Dashboard_TriStr", strStr, x, y, 9, strColor);
-         y += 18;
+         y += 16;
       }
       else if(triResult.pricePosition == PP_BREAKOUT_ABOVE || triResult.pricePosition == PP_BREAKOUT_BELOW)
       {
-         string brkStr = StringFormat("Breakout: %.2f%% beyond", triResult.breakoutPercent);
-         CreateLabel("MS_Dashboard_TriStr", brkStr, x, y, 9, posColor);
-         y += 18;
+         // Breakout percentage
+         CreateLabel("MS_Dashboard_TriStr",
+                     StringFormat("Breakout: %.2f%% beyond", triResult.breakoutPercent),
+                     x, y, 9, posColor);
+         y += 16;
+
+         // Validation status
+         string valStr = "Validation: " + trianglePattern.ValidationToString(triResult.validation);
+         color valColor = clrSilver;
+         if(triResult.validation == BV_VALIDATED) valColor = clrLime;
+         else if(triResult.validation == BV_INVALIDATED) valColor = clrOrange;
+
+         CreateLabel("MS_Dashboard_TriVal", valStr, x, y, 9, valColor);
+         y += 16;
       }
 
       // Trendline levels
       CreateLabel("MS_Dashboard_TriUpper",
                   StringFormat("Upper: %.5f", triResult.upperLevel), x, y, 9, InpTriUpperColor);
-      y += 16;
+      y += 14;
       CreateLabel("MS_Dashboard_TriLower",
                   StringFormat("Lower: %.5f", triResult.lowerLevel), x, y, 9, InpTriLowerColor);
-      y += 16;
+      y += 14;
 
       // Apex distance
-      CreateLabel("MS_Dashboard_TriApex",
-                  StringFormat("Apex in ~%.0f bars", triResult.apexBarDistance),
-                  x, y, 9, clrSilver);
+      if(triResult.apexBarDistance < 9999)
+         CreateLabel("MS_Dashboard_TriApex",
+                     StringFormat("Apex in ~%.0f bars", triResult.apexBarDistance),
+                     x, y, 9, clrSilver);
+      else
+         CreateLabel("MS_Dashboard_TriApex", "Apex: distant", x, y, 9, clrSilver);
+   }
+   else
+   {
+      CreateLabel("MS_Dashboard_TriSel", "No valid triangle", x, y, 9, clrGray);
    }
 }
 
@@ -555,7 +557,6 @@ void PrintStructureSummary()
    Print("Swing Lows Found: ", marketStructure.GetSwingLowCount());
    Print("Structure Events: ", marketStructure.GetEventCount());
 
-   // Print all events
    StructureEvent event;
    for(int i = 0; i < marketStructure.GetEventCount(); i++)
    {
@@ -578,29 +579,54 @@ void PrintStructureSummary()
 void PrintTriangleSummary()
 {
    Print("=== Triangle Pattern Summary ===");
-   TriangleResult result = trianglePattern.GetResult();
 
-   Print("Pattern: ", trianglePattern.PatternToString(result.pattern));
-
-   if(result.pattern != TP_NONE)
+   // Print all 5 candidates
+   TriangleCandidate cand;
+   for(int i = 0; i < TRIANGLE_CANDIDATES; i++)
    {
-      Print("Price Position: ", trianglePattern.PositionToString(result.pricePosition));
-
-      if(result.pricePosition == PP_INSIDE)
-         Print("Market Strength: ", trianglePattern.StrengthToString(result.strength));
-      else if(result.pricePosition == PP_BREAKOUT_ABOVE)
-         Print(StringFormat("BULLISH BREAKOUT - %.2f%% above upper trendline", result.breakoutPercent));
-      else if(result.pricePosition == PP_BREAKOUT_BELOW)
-         Print(StringFormat("BEARISH BREAKOUT - %.2f%% below lower trendline", result.breakoutPercent));
-
-      Print(StringFormat("Upper Trendline: %.5f (slope: %.6f, R²: %.3f)",
-            result.upperLevel, result.highSlope, result.highR2));
-      Print(StringFormat("Lower Trendline: %.5f (slope: %.6f, R²: %.3f)",
-            result.lowerLevel, result.lowSlope, result.lowR2));
-      Print(StringFormat("Apex in ~%.0f bars", result.apexBarDistance));
-      Print(StringFormat("Current Price: %.5f", result.currentPrice));
+      if(trianglePattern.GetCandidate(i, cand))
+      {
+         if(cand.isValid)
+         {
+            Print(StringFormat("  Tri#%d: %s | R²:%.3f | Score:%.3f | Upper:%.5f Lower:%.5f%s",
+                  i + 1,
+                  trianglePattern.PatternToString(cand.pattern),
+                  cand.combinedR2,
+                  cand.score,
+                  cand.upperAtCurrent,
+                  cand.lowerAtCurrent,
+                  (i == trianglePattern.GetBestCandidateIndex()) ? " << SELECTED" : ""));
+         }
+         else
+         {
+            Print(StringFormat("  Tri#%d: (no valid pattern)", i + 1));
+         }
+      }
    }
 
+   // Print selected result
+   TriangleResult result = trianglePattern.GetResult();
+   if(result.pattern != TP_NONE)
+   {
+      Print("---");
+      Print("Best: ", trianglePattern.GetSummary());
+      Print("Position: ", trianglePattern.PositionToString(result.pricePosition));
+
+      if(result.pricePosition == PP_INSIDE)
+         Print("Strength: ", trianglePattern.StrengthToString(result.strength));
+      else if(result.pricePosition == PP_BREAKOUT_ABOVE || result.pricePosition == PP_BREAKOUT_BELOW)
+      {
+         Print(StringFormat("Breakout: %.2f%% | Validation: %s",
+               result.breakoutPercent,
+               trianglePattern.ValidationToString(result.validation)));
+      }
+   }
+   else
+   {
+      Print("No valid triangle pattern detected");
+   }
+
+   Print("Candidates: ", trianglePattern.GetCandidatesSummary());
    Print("================================");
 }
 
