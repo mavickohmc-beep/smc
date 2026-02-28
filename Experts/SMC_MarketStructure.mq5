@@ -3,12 +3,13 @@
 //|                      Smart Money Concepts - Market Structure EA   |
 //+------------------------------------------------------------------+
 #property copyright "SMC EA"
-#property version   "2.00"
-#property description "Market structure (BOS/ChoCH) and Triangle pattern detection with breakout validation"
+#property version   "3.00"
+#property description "Market structure (BOS/ChoCH), Triangle patterns, and Structure zone visualization"
 #property strict
 
 #include "../Include/MarketStructure.mqh"
 #include "../Include/TrianglePatterns.mqh"
+#include "../Include/MSVisualizer.mqh"
 
 //--- Input parameters: Market Structure
 input group  "=== Market Structure ==="
@@ -24,6 +25,11 @@ input double InpTriBreakoutPct   = 0.15;       // Breakout margin (% beyond tren
 input bool   InpTriDrawLines     = true;       // Draw triangle trendlines on chart
 input bool   InpAlertOnBreakout  = true;       // Alert on triangle breakout
 
+//--- Input parameters: Structure Visualizer
+input group  "=== Structure Visualizer ==="
+input bool   InpVizEnabled    = true;          // Enable market structure zone shading
+input bool   InpVizShowLabels = true;          // Show ChoCH flip labels on chart
+
 //--- Input parameters: Visuals
 input group  "=== Visual Settings ==="
 input bool   InpShowDashboard  = true;         // Show on-chart dashboard
@@ -37,11 +43,12 @@ input color  InpTriUpperColor  = clrGold;       // Triangle upper trendline colo
 input color  InpTriLowerColor  = clrMagenta;    // Triangle lower trendline color
 
 //--- Global variables
-CMarketStructure marketStructure;
-CTrianglePattern trianglePattern;
-ENUM_MARKET_STRUCTURE lastStructure = MS_UNDEFINED;
-ENUM_PRICE_POSITION   lastTriPosition = PP_NO_TRIANGLE;
-datetime lastBarTime = 0;
+CMarketStructure    marketStructure;
+CTrianglePattern    trianglePattern;
+CMarketStructureViz msVisualizer;
+ENUM_MARKET_STRUCTURE lastStructure    = MS_UNDEFINED;
+ENUM_PRICE_POSITION   lastTriPosition  = PP_NO_TRIANGLE;
+datetime              lastBarTime      = 0;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -67,6 +74,10 @@ int OnInit()
    trianglePattern.Init(_Symbol, _Period, InpTriMinSwings, InpTriFlatThreshold,
                         InpTriBreakoutPct);
 
+   // Initialize structure visualizer
+   msVisualizer.Init(_Symbol, _Period, InpBullishColor, InpBearishColor,
+                     InpVizShowLabels);
+
    // Run initial analysis
    marketStructure.Update();
    trianglePattern.Analyze(marketStructure);
@@ -74,13 +85,15 @@ int OnInit()
    lastTriPosition = trianglePattern.GetPricePosition();
 
    // Draw initial state
+   if(InpVizEnabled)
+      msVisualizer.Draw(marketStructure);
    DrawSwingPoints();
    DrawStructureLevels();
    DrawTriangleTrendlines();
    if(InpShowDashboard)
       DrawDashboard();
 
-   Print("SMC Market Structure EA v2.0 initialized");
+   Print("SMC Market Structure EA v3.0 initialized");
    Print("Symbol: ", _Symbol, " | Timeframe: ", EnumToString(_Period));
    Print("Lookback: ", InpLookback, " | Swing Strength: ", InpSwingStrength);
    PrintStructureSummary();
@@ -96,6 +109,7 @@ void OnDeinit(const int reason)
 {
    ObjectsDeleteAll(0, "MS_");
    ObjectsDeleteAll(0, "TRI_");
+   ObjectsDeleteAll(0, "MSV_");
    Comment("");
 }
 
@@ -133,6 +147,8 @@ void OnTick()
    }
 
    // Redraw visual elements
+   if(InpVizEnabled)
+      msVisualizer.Draw(marketStructure);
    CleanupObjects();
    DrawSwingPoints();
    DrawStructureLevels();
@@ -544,6 +560,8 @@ void CleanupObjects()
    ObjectsDeleteAll(0, "MS_TXT_");
    ObjectsDeleteAll(0, "MS_Dashboard");
    ObjectsDeleteAll(0, "TRI_");
+   if(!InpVizEnabled)
+      ObjectsDeleteAll(0, "MSV_");
 }
 
 //+------------------------------------------------------------------+
